@@ -3,8 +3,18 @@ import fs from 'fs'
 import path from 'path'
 import os from 'os'
 
+function trySpawn(exe: string, args: string[], options: object) {
+  try {
+    const r = spawnSync(exe, args, options as any)
+    if (r.error && (r.error as any).code === 'ENOENT') return null
+    return r
+  } catch {
+    return null
+  }
+}
+
 /**
- * Converts a DOCX ArrayBuffer to PDF using Microsoft Word COM automation.
+ * Converts a DOCX ArrayBuffer to PDF using Microsoft Word COM automation via PowerShell.
  */
 export async function generatePdf(
   docxBuffer: ArrayBuffer,
@@ -39,40 +49,48 @@ try {
 $results | ForEach-Object { Write-Output $_ }
 `.trim()
 
-    // Try multiple known PowerShell locations — Next.js may run with a
-    // stripped PATH that doesn't include the Windows system dirs
-    const psLocations = [
+    const psArgs = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', ps]
+
+    const spawnOpts = {
+      timeout: 60_000,
+      stdio: 'pipe' as const,
+      encoding: 'utf8' as const,
+      env: {
+        ...process.env,
+        PATH: [
+          process.env.PATH ?? '',
+          'C:\\Windows\\System32',
+          'C:\\Windows\\SysWOW64',
+          'C:\\Windows\\System32\\WindowsPowerShell\\v1.0',
+          'C:\\Program Files\\PowerShell\\7',
+        ].join(';'),
+      },
+    }
+
+    // Try every possible PowerShell executable in order
+    const candidates = [
       'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
       'C:\\Windows\\SysWOW64\\WindowsPowerShell\\v1.0\\powershell.exe',
       'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
-      'C:\\Program Files\\PowerShell\\7.4\\pwsh.exe',
-      'C:\\Program Files\\PowerShell\\7.3\\pwsh.exe',
-      'powershell.exe', // fallback: hope it's on PATH
+      'powershell.exe',
+      'pwsh.exe',
     ]
 
-    const psExe = psLocations.find(p => {
-      try { return p === 'powershell.exe' || fs.existsSync(p) } catch { return false }
-    }) ?? 'powershell.exe'
+    let result: ReturnType<typeof spawnSync> | null = null
+    let usedExe = ''
 
-    const result = spawnSync(
-      psExe,
-      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', ps],
-      {
-        timeout: 60_000,
-        stdio: 'pipe',
-        encoding: 'utf8',
-        // Inject system dirs into PATH so Word COM and powershell can find DLLs
-        env: {
-          ...process.env,
-          PATH: [
-            process.env.PATH,
-            'C:\\Windows\\System32',
-            'C:\\Windows\\SysWOW64',
-            'C:\\Windows\\System32\\WindowsPowerShell\\v1.0',
-          ].filter(Boolean).join(';'),
-        },
-      }
-    )
+    for (const exe of candidates) {
+      result = trySpawn(exe, psArgs, spawnOpts)
+      if (result !== null) { usedExe = exe; break }
+    }
+
+    if (!result) {
+      throw new Error(
+        'Could not launch PowerShell. None of these were found:\n' +
+        candidates.join('\n') + '\n\n' +
+        'Please ensure PowerShell is installed on this Windows machine.'
+      )
+    }
 
     const stdout = result.stdout?.toString().trim() ?? ''
     const stderr = result.stderr?.toString().trim() ?? ''
@@ -80,12 +98,11 @@ $results | ForEach-Object { Write-Output $_ }
 
     if (!pdfExists) {
       throw new Error(
-        `Word COM conversion failed.\n` +
-        `powershell used: ${psExe}\n` +
+        `Word COM conversion failed — PDF was not created.\n` +
+        `PowerShell: ${usedExe}\n` +
         `stdout: ${stdout || '(empty)'}\n` +
         `stderr: ${stderr || '(empty)'}\n` +
-        `spawnStatus: ${result.status}\n` +
-        `spawnError: ${result.error ?? 'none'}`
+        `spawnStatus: ${result.status}`
       )
     }
 
