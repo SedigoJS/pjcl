@@ -12,10 +12,6 @@ export async function generatePdf(
   docxBuffer: ArrayBuffer,
   _processedData?: unknown
 ): Promise<Uint8Array> {
-  if (process.platform !== 'win32') {
-    throw new Error('Microsoft Word COM conversion is only available on Windows.')
-  }
-
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'alaw-pdf-'))
 
   try {
@@ -28,8 +24,6 @@ export async function generatePdf(
     const inputFwd  = inputPath.replace(/\\/g, '/')
     const outputFwd = outputPath.replace(/\\/g, '/')
 
-    // We deliberately wrap SaveAs2 in its own try/catch so that a Word
-    // crash on Quit() does NOT mask a successful PDF save.
     const ps = `
 $ErrorActionPreference = 'Stop'
 $pdfCreated = $false
@@ -38,14 +32,12 @@ $word.Visible = $false
 $word.DisplayAlerts = [Microsoft.Office.Interop.Word.WdAlertLevel]::wdAlertsNone
 try {
     $doc = $word.Documents.Open('${inputFwd}')
-    # 17 = wdFormatPDF
     $doc.SaveAs2('${outputFwd}', 17)
     $doc.Close([ref]$false)
     $pdfCreated = $true
 } catch {
     Write-Host "SAVE_ERROR: $_"
 }
-# Quit in its own try so a crash here does not shadow a successful save
 try { $word.Quit() } catch { }
 try {
     [System.Runtime.InteropServices.Marshal]::ReleaseComObject($word) | Out-Null
@@ -56,7 +48,7 @@ if ($pdfCreated) { Write-Host 'PDF_OK' } else { exit 1 }
 `.trim()
 
     const result = spawnSync(
-      'powershell',
+      'powershell.exe',
       ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', ps],
       { timeout: 60_000, stdio: 'pipe', encoding: 'utf8' }
     )
@@ -64,7 +56,7 @@ if ($pdfCreated) { Write-Host 'PDF_OK' } else { exit 1 }
     const stdout = result.stdout?.toString().trim() ?? ''
     const stderr = result.stderr?.toString().trim() ?? ''
 
-    // As long as the PDF file exists we succeeded — ignore Word's Quit() tantrum
+    // PDF file existing is the only success condition — ignore Word's Quit() errors
     if (!fs.existsSync(outputPath)) {
       throw new Error(
         `Word COM conversion failed — PDF was not created.\n` +
@@ -73,12 +65,11 @@ if ($pdfCreated) { Write-Host 'PDF_OK' } else { exit 1 }
       )
     }
 
-    // Small delay so Word fully releases file handles before we read
     await new Promise(r => setTimeout(r, 500))
 
     return new Uint8Array(fs.readFileSync(outputPath))
   } finally {
     await new Promise(r => setTimeout(r, 500))
-    try { fs.rmSync(tmpDir, { recursive: true, force: true }) } catch { /* Word may still hold a handle */ }
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }) } catch { }
   }
 }
