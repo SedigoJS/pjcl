@@ -5,8 +5,6 @@ import os from 'os'
 
 /**
  * Converts a DOCX ArrayBuffer to PDF using Microsoft Word COM automation.
- * Produces a pixel-perfect PDF identical to File -> Export -> PDF in Word.
- * Requires Microsoft Word to be installed on Windows.
  */
 export async function generatePdf(
   docxBuffer: ArrayBuffer,
@@ -20,31 +18,26 @@ export async function generatePdf(
 
     fs.writeFileSync(inputPath, Buffer.from(docxBuffer))
 
-    // Forward slashes — Word COM accepts them and avoids backslash escaping issues
-    const inputFwd  = inputPath.replace(/\\/g, '/')
-    const outputFwd = outputPath.replace(/\\/g, '/')
+    // Use backslash paths wrapped in escaped quotes for the PS script
+    const inputEsc  = inputPath.replace(/\\/g, '\\\\')
+    const outputEsc = outputPath.replace(/\\/g, '\\\\')
 
     const ps = `
-$ErrorActionPreference = 'Stop'
-$pdfCreated = $false
-$word = New-Object -ComObject Word.Application
-$word.Visible = $false
-$word.DisplayAlerts = [Microsoft.Office.Interop.Word.WdAlertLevel]::wdAlertsNone
+$ErrorActionPreference = 'Continue'
+$stdout = @()
 try {
-    $doc = $word.Documents.Open('${inputFwd}')
-    $doc.SaveAs2('${outputFwd}', 17)
+    $word = New-Object -ComObject Word.Application
+    $word.Visible = $false
+    $word.DisplayAlerts = 0
+    $doc = $word.Documents.Open("${inputEsc}")
+    $doc.SaveAs2("${outputEsc}", 17)
     $doc.Close([ref]$false)
-    $pdfCreated = $true
+    $stdout += "PDF_SAVED"
+    try { $word.Quit() } catch { $stdout += "QUIT_ERR: $_" }
 } catch {
-    Write-Host "SAVE_ERROR: $_"
+    $stdout += "ERROR: $_"
 }
-try { $word.Quit() } catch { }
-try {
-    [System.Runtime.InteropServices.Marshal]::ReleaseComObject($word) | Out-Null
-    [GC]::Collect()
-    [GC]::WaitForPendingFinalizers()
-} catch { }
-if ($pdfCreated) { Write-Host 'PDF_OK' } else { exit 1 }
+$stdout | ForEach-Object { Write-Output $_ }
 `.trim()
 
     const result = spawnSync(
@@ -55,19 +48,24 @@ if ($pdfCreated) { Write-Host 'PDF_OK' } else { exit 1 }
 
     const stdout = result.stdout?.toString().trim() ?? ''
     const stderr = result.stderr?.toString().trim() ?? ''
+    const pdfExists = fs.existsSync(outputPath)
 
-    // PDF file existing is the only success condition — ignore Word's Quit() errors
-    if (!fs.existsSync(outputPath)) {
+    // Surface full debug info so we can see exactly what went wrong
+    if (!pdfExists) {
       throw new Error(
-        `Word COM conversion failed — PDF was not created.\n` +
-        (stderr ? `stderr: ${stderr}\n` : '') +
-        (stdout ? `stdout: ${stdout}\n` : '')
+        `Word COM conversion failed.\n` +
+        `stdout: ${stdout || '(empty)'}\n` +
+        `stderr: ${stderr || '(empty)'}\n` +
+        `spawnStatus: ${result.status}\n` +
+        `spawnError: ${result.error ?? 'none'}\n` +
+        `tmpDir: ${tmpDir}\n` +
+        `inputExists: ${fs.existsSync(inputPath)}`
       )
     }
 
     await new Promise(r => setTimeout(r, 500))
-
     return new Uint8Array(fs.readFileSync(outputPath))
+
   } finally {
     await new Promise(r => setTimeout(r, 500))
     try { fs.rmSync(tmpDir, { recursive: true, force: true }) } catch { }
