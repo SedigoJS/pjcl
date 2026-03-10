@@ -18,13 +18,12 @@ export async function generatePdf(
 
     fs.writeFileSync(inputPath, Buffer.from(docxBuffer))
 
-    // Use backslash paths wrapped in escaped quotes for the PS script
     const inputEsc  = inputPath.replace(/\\/g, '\\\\')
     const outputEsc = outputPath.replace(/\\/g, '\\\\')
 
     const ps = `
 $ErrorActionPreference = 'Continue'
-$stdout = @()
+$results = @()
 try {
     $word = New-Object -ComObject Word.Application
     $word.Visible = $false
@@ -32,34 +31,61 @@ try {
     $doc = $word.Documents.Open("${inputEsc}")
     $doc.SaveAs2("${outputEsc}", 17)
     $doc.Close([ref]$false)
-    $stdout += "PDF_SAVED"
-    try { $word.Quit() } catch { $stdout += "QUIT_ERR: $_" }
+    $results += "PDF_SAVED"
+    try { $word.Quit() } catch { }
 } catch {
-    $stdout += "ERROR: $_"
+    $results += "ERROR: $_"
 }
-$stdout | ForEach-Object { Write-Output $_ }
+$results | ForEach-Object { Write-Output $_ }
 `.trim()
 
+    // Try multiple known PowerShell locations — Next.js may run with a
+    // stripped PATH that doesn't include the Windows system dirs
+    const psLocations = [
+      'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+      'C:\\Windows\\SysWOW64\\WindowsPowerShell\\v1.0\\powershell.exe',
+      'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
+      'C:\\Program Files\\PowerShell\\7.4\\pwsh.exe',
+      'C:\\Program Files\\PowerShell\\7.3\\pwsh.exe',
+      'powershell.exe', // fallback: hope it's on PATH
+    ]
+
+    const psExe = psLocations.find(p => {
+      try { return p === 'powershell.exe' || fs.existsSync(p) } catch { return false }
+    }) ?? 'powershell.exe'
+
     const result = spawnSync(
-      'powershell.exe',
+      psExe,
       ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', ps],
-      { timeout: 60_000, stdio: 'pipe', encoding: 'utf8' }
+      {
+        timeout: 60_000,
+        stdio: 'pipe',
+        encoding: 'utf8',
+        // Inject system dirs into PATH so Word COM and powershell can find DLLs
+        env: {
+          ...process.env,
+          PATH: [
+            process.env.PATH,
+            'C:\\Windows\\System32',
+            'C:\\Windows\\SysWOW64',
+            'C:\\Windows\\System32\\WindowsPowerShell\\v1.0',
+          ].filter(Boolean).join(';'),
+        },
+      }
     )
 
     const stdout = result.stdout?.toString().trim() ?? ''
     const stderr = result.stderr?.toString().trim() ?? ''
     const pdfExists = fs.existsSync(outputPath)
 
-    // Surface full debug info so we can see exactly what went wrong
     if (!pdfExists) {
       throw new Error(
         `Word COM conversion failed.\n` +
+        `powershell used: ${psExe}\n` +
         `stdout: ${stdout || '(empty)'}\n` +
         `stderr: ${stderr || '(empty)'}\n` +
         `spawnStatus: ${result.status}\n` +
-        `spawnError: ${result.error ?? 'none'}\n` +
-        `tmpDir: ${tmpDir}\n` +
-        `inputExists: ${fs.existsSync(inputPath)}`
+        `spawnError: ${result.error ?? 'none'}`
       )
     }
 
