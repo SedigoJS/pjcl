@@ -8,7 +8,7 @@ export interface ProcessedData {
   cleanAccountHolder: string
   pdfFilename: string
 }
-
+ 
 export function processAccountData(
   docData: ExtractedDocxData,
   excelAccountNumbers: string[]
@@ -44,11 +44,43 @@ export function processAccountData(
   console.log('[v0] Truncated account number (removed first 3 chars):', truncatedAccountNumber)
 
   // Extract the surname (last word) from account holder name
-  const nameWords = docData.accountHolder.trim().split(/\s+/)
-  const surname = nameWords[nameWords.length - 1]
-    .replace(/[&]/g, '') // Remove ampersands
-    .replace(/[^a-zA-Z0-9\-]/g, '') // Remove special characters except hyphens
-    .toUpperCase()
+  const holder = docData.accountHolder.trim()
+
+  const businessPattern = /\b(LLC|INC|CORP|LTD|COMPANY|CO|BANK|HOLDINGS|GROUP|ASSOCIATES)\b/i
+  const suffixPattern = /\b(JR|SR|II|III|IV|V)\b/i
+
+  let surname = ''
+
+  // 1️⃣ If a business exists anywhere, return the business name only
+  const businessMatch = holder.match(/^(.*?\b(?:LLC|INC|CORP|LTD|COMPANY|CO|BANK|HOLDINGS|GROUP|ASSOCIATES)\b)/i)
+
+  if (businessMatch) {
+    surname = businessMatch[1]
+      .replace(/[^\w\s\-]/g, '')
+      .trim()
+      .toUpperCase()
+
+  } else {
+
+    // 2️⃣ Split multiple people
+    const firstPerson = holder.split(/\band\b|&/i)[0].trim()
+
+    const words = firstPerson.split(/\s+/)
+
+    const lastWord = words[words.length - 1]
+    const secondLastWord = words[words.length - 2]
+
+    if (suffixPattern.test(lastWord) && secondLastWord) {
+      // Handle suffix like Jr
+      surname = `${secondLastWord} ${lastWord}`
+    } else {
+      surname = lastWord
+    }
+
+    surname = surname
+      .replace(/[^A-Za-z0-9\- ]/g, '')
+      .toUpperCase()
+  }
 
   console.log('[v0] Original account holder:', docData.accountHolder)
   console.log('[v0] Extracted surname:', surname)

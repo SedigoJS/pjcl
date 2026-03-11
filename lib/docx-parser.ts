@@ -53,7 +53,7 @@ export async function parseDocx(buffer: ArrayBuffer): Promise<ExtractedDocxData>
 
     // Extract Account Holder - text is "Account Holders: MOHAMED S ABDIRAHMANJudgment Amount:"
     // Match from "Account Holder(s):" to "Judgment" (case-insensitive, allow any chars except newline)
-    const accountHolderMatch = fullText.match(/Account\s+Holders?:\s*([^J]+?)Judgment/i)
+    const accountHolderMatch = fullText.match(/Account\s+Holders?:\s*([^\r\n]+)/i)
     const accountHolder = accountHolderMatch ? accountHolderMatch[1].trim() : ''
     
     if (!accountHolder) {
